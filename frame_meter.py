@@ -373,100 +373,83 @@ class FrameDataAnnotator:
     def add_frame_meter(self, frame):
         height, width = frame.shape[:2]
         meter_height = 20
-        gap_height = 5  # Gap between P1 and P2 meters
-        meter_y = height - (meter_height * 2 + gap_height) - 10  # Move up by 10px
+        gap_height = 5
+        meter_y = height - (meter_height * 2 + gap_height) - 10  # 10px from bottom
 
         # Create overlay
         overlay = np.zeros((height, width, 4), dtype=np.uint8)
 
-        # Calculate the width of each state block
-        state_width = width // self.meter_size
+        # Calculate meter dimensions
+        meter_width = int(width * 0.9)
+        # Adjust width to be exactly divisible by meter_size for perfect blocks
+        meter_width = (meter_width // self.meter_size) * self.meter_size
 
-        # Draw fighter 1 meter (top) - using the meter buffer
-        for i in range(self.meter_size):
-            # Get the state from our meter buffer
-            state = self.meter_fighter1_states[i]
-            color = STATE_COLORS.get(state, (255, 255, 255))
+        # Calculate starting position for perfect centering
+        meter_x_start = (width - meter_width) // 2
+        # Ensure we don't go negative (for very small frames)
+        meter_x_start = max(0, meter_x_start)
 
-            x1 = i * state_width
-            x2 = (i + 1) * state_width
+        # Calculate exact block width (now perfectly divisible)
+        state_width = meter_width // self.meter_size
 
-            # Draw filled rectangle
-            cv2.rectangle(
-                overlay, (x1, meter_y), (x2, meter_y + meter_height), (*color, 230), -1
-            )
-            # Draw black border
-            cv2.rectangle(
-                overlay, (x1, meter_y), (x2, meter_y + meter_height), (0, 0, 0, 255), 1
+        # Draw both meters
+        for fighter_num in [1, 2]:
+            y_start = (
+                meter_y if fighter_num == 1 else meter_y + meter_height + gap_height
             )
 
-        # Draw fighter 2 meter (bottom) - using the meter buffer
-        for i in range(self.meter_size):
-            # Get the state from our meter buffer
-            state = self.meter_fighter2_states[i]
-            color = STATE_COLORS.get(state, (255, 255, 255))
+            for i in range(self.meter_size):
+                state = (
+                    self.meter_fighter1_states[i]
+                    if fighter_num == 1
+                    else self.meter_fighter2_states[i]
+                )
+                color = STATE_COLORS.get(state, (255, 255, 255))
 
-            x1 = i * state_width
-            x2 = (i + 1) * state_width
+                x1 = meter_x_start + i * state_width
+                x2 = x1 + state_width
 
-            # Draw filled rectangle
-            cv2.rectangle(
-                overlay,
-                (x1, meter_y + meter_height + gap_height),
-                (x2, meter_y + meter_height * 2 + gap_height),
-                (*color, 230),
-                -1,
-            )
-            # Draw black border
-            cv2.rectangle(
-                overlay,
-                (x1, meter_y + meter_height + gap_height),
-                (x2, meter_y + meter_height * 2 + gap_height),
-                (0, 0, 0, 255),
-                1,
-            )
+                # Draw rectangle
+                cv2.rectangle(
+                    overlay,
+                    (x1, y_start),
+                    (x2, y_start + meter_height),
+                    (*color, 230),
+                    -1,
+                )
+                cv2.rectangle(
+                    overlay,
+                    (x1, y_start),
+                    (x2, y_start + meter_height),
+                    (0, 0, 0, 255),
+                    1,
+                )
 
-        # Add text for fighter labels
-        cv2.putText(
-            overlay,
-            f"P1",
-            (2, meter_y + 15),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 0, 0, 255),
-            1,
+        # Current position indicator (centered on active block)
+        active_block_center = (
+            meter_x_start + self.meter_position * state_width + state_width // 2
         )
-        cv2.putText(
+        cv2.fillPoly(
             overlay,
-            f"P2",
-            (2, meter_y + meter_height + gap_height + 15),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 0, 0, 255),
-            1,
-        )
-
-        # Draw indicator for current frame position
-        x_pos = self.meter_position * state_width + state_width // 2
-
-        # Draw triangle indicator above P1 meter
-        triangle_pts = np.array(
             [
-                [x_pos, meter_y - 5],
-                [x_pos - 5, meter_y - 10],
-                [x_pos + 5, meter_y - 10],
+                np.array(
+                    [
+                        [active_block_center, meter_y - 5],
+                        [active_block_center - 5, meter_y - 10],
+                        [active_block_center + 5, meter_y - 10],
+                    ],
+                    np.int32,
+                )
             ],
-            np.int32,
+            (255, 255, 255, 255),
         )
-        cv2.fillPoly(overlay, [triangle_pts], (255, 255, 255, 255))
 
-        # Blend overlay with frame
+        # Blend overlay
         frame_rgba = cv2.cvtColor(frame, cv2.COLOR_RGB2RGBA)
-        alpha = overlay[:, :, 3] / 255.0
-
+        alpha = overlay[..., 3] / 255.0
         for c in range(3):
-            frame_rgba[:, :, c] = (
-                frame_rgba[:, :, c] * (1 - alpha) + overlay[:, :, c] * alpha
+            frame_rgba[..., c] = (
+                frame_rgba[..., c] * (1 - alpha) + overlay[..., c] * alpha
             )
 
         return frame_rgba
