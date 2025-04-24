@@ -5,10 +5,7 @@ from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
 import json
 from dataclasses import dataclass
-from typing import Dict, Optional, List
 import os
-from datetime import datetime
-from collections import deque
 
 
 # Define the different states a fighter can be in
@@ -63,18 +60,17 @@ class FrameDataAnnotator:
         self.meter_fighter1_states = [FrameState.NEUTRAL] * self.meter_size
         self.meter_fighter2_states = [FrameState.NEUTRAL] * self.meter_size
 
+        # Add sliding window for write mode
+        self.window_start = 0  # Start of sliding window for write mode
+
         # Add read/write mode
-        self.write_mode = True
+        self.write_mode = False
 
         # UI elements
         self.setup_ui()
 
         # Keyboard shortcuts
         self.setup_keyboard_shortcuts()
-
-        # History for undo/redo
-        self.history = []
-        self.history_index = -1
 
     def setup_ui(self):
         # Main container
@@ -115,7 +111,7 @@ class FrameDataAnnotator:
 
         ttk.Label(mode_frame, text="Mode:").pack(side=tk.LEFT, padx=5)
 
-        self.mode_var = tk.StringVar(value="Write")
+        self.mode_var = tk.StringVar(value="Read")
         self.mode_toggle = ttk.Checkbutton(
             mode_frame,
             text="Write Mode",
@@ -216,6 +212,9 @@ class FrameDataAnnotator:
             self.f1_state.set(self.fighter1_states[self.current_frame])
             self.f2_state.set(self.fighter2_states[self.current_frame])
 
+        # Update frame to refresh the display with the new mode's visualization
+        self.update_frame()
+
     def update_radio_buttons_state(self):
         state = "normal" if self.write_mode else "disabled"
 
@@ -273,6 +272,12 @@ class FrameDataAnnotator:
             self.meter_fighter2_states = [FrameState.NEUTRAL] * self.meter_size
             self.meter_position = 0
 
+            # Reset window start for write mode sliding window
+            self.window_start = 0
+
+            # Reset to first frame
+            self.current_frame = 0
+
             self.frame_slider.configure(to=self.total_frames - 1)
             self.update_frame()
             self.status_var.set(f"Loaded video: {os.path.basename(file_path)}")
@@ -289,10 +294,35 @@ class FrameDataAnnotator:
         # Convert frame to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Update the meter buffer with current frame's state
-        self.meter_position = self.current_frame % self.meter_size
-        self.meter_fighter1_states[self.meter_position] = self.fighter1_states[self.current_frame]
-        self.meter_fighter2_states[self.meter_position] = self.fighter2_states[self.current_frame]
+        if self.write_mode:
+            # For write mode - update the sliding window
+            # Adjust window start to keep current frame in view
+            if self.current_frame >= self.meter_size:
+                self.window_start = max(0, self.current_frame - self.meter_size + 1)
+            else:
+                self.window_start = 0
+
+            # Use chronological window for display
+            for i in range(self.meter_size):
+                frame_idx = self.window_start + i
+                if frame_idx < self.total_frames:
+                    self.meter_fighter1_states[i] = self.fighter1_states[frame_idx]
+                    self.meter_fighter2_states[i] = self.fighter2_states[frame_idx]
+                else:
+                    self.meter_fighter1_states[i] = FrameState.NEUTRAL
+                    self.meter_fighter2_states[i] = FrameState.NEUTRAL
+
+            # Set pointer position relative to window start
+            self.meter_position = self.current_frame - self.window_start
+        else:
+            # For read mode - use circular buffer
+            self.meter_position = self.current_frame % self.meter_size
+            self.meter_fighter1_states[self.meter_position] = self.fighter1_states[
+                self.current_frame
+            ]
+            self.meter_fighter2_states[self.meter_position] = self.fighter2_states[
+                self.current_frame
+            ]
 
         # Update radio button states to reflect current frame data only in read mode
         if not self.write_mode:
@@ -303,7 +333,9 @@ class FrameDataAnnotator:
         frame = self.add_frame_meter(frame)
 
         # Update frame counter
-        self.frame_label.configure(text=f"Frame: {self.current_frame}/{self.total_frames-1}")
+        self.frame_label.configure(
+            text=f"Frame: {self.current_frame}/{self.total_frames-1}"
+        )
 
         # Display frame
         height, width = frame.shape[:2]
@@ -326,7 +358,9 @@ class FrameDataAnnotator:
             y = (canvas_height - new_height) // 2
 
             self.video_canvas.delete("all")
-            self.video_canvas.create_image(x, y, image=self.current_img_tk, anchor=tk.NW)
+            self.video_canvas.create_image(
+                x, y, image=self.current_img_tk, anchor=tk.NW
+            )
 
     def add_frame_meter(self, frame):
         height, width = frame.shape[:2]
@@ -384,7 +418,7 @@ class FrameDataAnnotator:
                 1,
             )
 
-        # Add text for current states
+        # Add text for fighter labels
         cv2.putText(
             overlay,
             f"P1",
@@ -441,9 +475,6 @@ class FrameDataAnnotator:
         # In write mode, proceed with normal updates
         state = self.f1_state.get() if fighter_num == 1 else self.f2_state.get()
 
-        # Save current state to history
-        self.save_to_history()
-
         # Update frame data in the complete history
         if fighter_num == 1:
             self.fighter1_states[self.current_frame] = state
@@ -460,34 +491,6 @@ class FrameDataAnnotator:
         else:
             self.f2_state.set(state)
         self.update_fighter_state(fighter_num)
-
-    def save_to_history(self):
-        # Save current state before making changes
-        self.history = self.history[: self.history_index + 1]
-        self.history.append(
-            (
-                self.current_frame,
-                self.fighter1_states.copy(),
-                self.fighter2_states.copy(),
-            )
-        )
-        self.history_index = len(self.history) - 1
-
-    def undo(self):
-        if self.history_index > 0:
-            self.history_index -= 1
-            _, f1_states, f2_states = self.history[self.history_index]
-            self.fighter1_states = f1_states.copy()
-            self.fighter2_states = f2_states.copy()
-            self.update_frame()
-
-    def redo(self):
-        if self.history_index < len(self.history) - 1:
-            self.history_index += 1
-            _, f1_states, f2_states = self.history[self.history_index]
-            self.fighter1_states = f1_states.copy()
-            self.fighter2_states = f2_states.copy()
-            self.update_frame()
 
     def save_data(self):
         if not self.video_path:
@@ -567,14 +570,53 @@ class FrameDataAnnotator:
 
             # Save current state
             current_frame = self.current_frame
+            current_write_mode = self.write_mode
+            current_window_start = self.window_start
 
             # Reset to beginning
             self.current_frame = 0
+            self.window_start = 0
 
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
+
+                # Update the frame display for the current frame
+                if self.write_mode:
+                    # For write mode - update the sliding window
+                    if self.current_frame >= self.meter_size:
+                        self.window_start = max(
+                            0, self.current_frame - self.meter_size + 1
+                        )
+                    else:
+                        self.window_start = 0
+
+                    # Use chronological window for display
+                    for i in range(self.meter_size):
+                        frame_idx = self.window_start + i
+                        if frame_idx < total_frames:
+                            self.meter_fighter1_states[i] = self.fighter1_states[
+                                frame_idx
+                            ]
+                            self.meter_fighter2_states[i] = self.fighter2_states[
+                                frame_idx
+                            ]
+                        else:
+                            self.meter_fighter1_states[i] = FrameState.NEUTRAL
+                            self.meter_fighter2_states[i] = FrameState.NEUTRAL
+
+                    # Set pointer position relative to window start
+                    self.meter_position = self.current_frame - self.window_start
+                else:
+                    # For read mode - use circular buffer
+                    self.meter_position = self.current_frame % self.meter_size
+                    self.meter_fighter1_states[self.meter_position] = (
+                        self.fighter1_states[self.current_frame]
+                    )
+                    self.meter_fighter2_states[self.meter_position] = (
+                        self.fighter2_states[self.current_frame]
+                    )
 
                 # Add frame meter overlay
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -594,7 +636,12 @@ class FrameDataAnnotator:
 
             # Restore original state
             self.current_frame = current_frame
+            self.write_mode = current_write_mode
+            self.window_start = current_window_start
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+
+            # Update the display
+            self.update_frame()
 
             cap.release()
             out.release()
@@ -613,9 +660,6 @@ class FrameDataAnnotator:
                 # Update the current frame's states based on radio buttons BEFORE advancing
                 current_f1_state = self.f1_state.get()
                 current_f2_state = self.f2_state.get()
-
-                # Save to history before modifying
-                self.save_to_history()
 
                 # Update the current frame data with the current radio button selections
                 self.fighter1_states[self.current_frame] = current_f1_state
@@ -642,16 +686,13 @@ class FrameDataAnnotator:
                 current_f1_state = self.f1_state.get()
                 current_f2_state = self.f2_state.get()
 
-                # Save to history before modifying
-                self.save_to_history()
-
                 # Update the current frame data with the current radio button selections
                 self.fighter1_states[self.current_frame] = current_f1_state
                 self.fighter2_states[self.current_frame] = current_f2_state
 
             # Advance to next frame
             self.current_frame += 1
-            
+
             # Update UI - this will handle meter updates
             self.frame_slider.set(self.current_frame)
             self.update_frame()
@@ -663,9 +704,6 @@ class FrameDataAnnotator:
                 current_f1_state = self.f1_state.get()
                 current_f2_state = self.f2_state.get()
 
-                # Save to history before modifying
-                self.save_to_history()
-
                 # Update the current frame data with the current radio button selections
                 self.fighter1_states[self.current_frame] = current_f1_state
                 self.fighter2_states[self.current_frame] = current_f2_state
@@ -676,19 +714,69 @@ class FrameDataAnnotator:
 
             # Update UI
             self.frame_slider.set(self.current_frame)
-            self.update_frame()
+
+            # In write mode, custom update without sliding window if not at leftmost position
+            if self.write_mode and self.current_frame >= self.window_start:
+                # Only update the position within the current window - don't slide the window
+                self.meter_position = self.current_frame - self.window_start
+
+                # Update the display frame without calling update_frame (which would slide the window)
+                ret, frame = self.cap.read()
+                if ret:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                    # Update radio button states
+                    self.f1_state.set(self.fighter1_states[self.current_frame])
+                    self.f2_state.set(self.fighter2_states[self.current_frame])
+
+                    # Add frame meter overlay
+                    frame = self.add_frame_meter(frame)
+
+                    # Update frame counter
+                    self.frame_label.configure(
+                        text=f"Frame: {self.current_frame}/{self.total_frames-1}"
+                    )
+
+                    # Display frame
+                    height, width = frame.shape[:2]
+                    img = Image.fromarray(frame)
+                    self.current_img_tk = ImageTk.PhotoImage(image=img)
+
+                    # Resize canvas to match frame size while maintaining aspect ratio
+                    canvas_width = self.video_canvas.winfo_width()
+                    canvas_height = self.video_canvas.winfo_height()
+
+                    if canvas_width > 1 and canvas_height > 1:
+                        scale = min(canvas_width / width, canvas_height / height)
+                        new_width = int(width * scale)
+                        new_height = int(height * scale)
+
+                        img = img.resize(
+                            (new_width, new_height), Image.Resampling.LANCZOS
+                        )
+                        self.current_img_tk = ImageTk.PhotoImage(image=img)
+
+                        x = (canvas_width - new_width) // 2
+                        y = (canvas_height - new_height) // 2
+
+                        self.video_canvas.delete("all")
+                        self.video_canvas.create_image(
+                            x, y, image=self.current_img_tk, anchor=tk.NW
+                        )
+            else:
+                # Call the regular update method for other cases (read mode or when we need to slide the window)
+                self.update_frame()
 
     def slider_changed(self, value):
         try:
             frame = int(float(value))
             if frame != self.current_frame:
+                old_frame = self.current_frame
+
                 if self.write_mode:
                     # Update the current frame's states based on radio buttons BEFORE changing frame
                     current_f1_state = self.f1_state.get()
                     current_f2_state = self.f2_state.get()
-
-                    # Save to history before modifying
-                    self.save_to_history()
 
                     # Update the current frame data with the current radio button selections
                     self.fighter1_states[self.current_frame] = current_f1_state
@@ -698,8 +786,57 @@ class FrameDataAnnotator:
                 self.current_frame = frame
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
 
-                # Update UI
-                self.update_frame()
+                # In write mode, maintain window position if moving backwards within current window
+                if self.write_mode and frame < old_frame and frame >= self.window_start:
+                    # Only update the position within the current window - don't slide the window
+                    self.meter_position = self.current_frame - self.window_start
+
+                    # Update the display frame without calling update_frame (which would slide the window)
+                    ret, frame_img = self.cap.read()
+                    if ret:
+                        frame_img = cv2.cvtColor(frame_img, cv2.COLOR_BGR2RGB)
+
+                        # Update radio button states
+                        self.f1_state.set(self.fighter1_states[self.current_frame])
+                        self.f2_state.set(self.fighter2_states[self.current_frame])
+
+                        # Add frame meter overlay
+                        frame_img = self.add_frame_meter(frame_img)
+
+                        # Update frame counter
+                        self.frame_label.configure(
+                            text=f"Frame: {self.current_frame}/{self.total_frames-1}"
+                        )
+
+                        # Display frame
+                        height, width = frame_img.shape[:2]
+                        img = Image.fromarray(frame_img)
+                        self.current_img_tk = ImageTk.PhotoImage(image=img)
+
+                        # Resize canvas to match frame size while maintaining aspect ratio
+                        canvas_width = self.video_canvas.winfo_width()
+                        canvas_height = self.video_canvas.winfo_height()
+
+                        if canvas_width > 1 and canvas_height > 1:
+                            scale = min(canvas_width / width, canvas_height / height)
+                            new_width = int(width * scale)
+                            new_height = int(height * scale)
+
+                            img = img.resize(
+                                (new_width, new_height), Image.Resampling.LANCZOS
+                            )
+                            self.current_img_tk = ImageTk.PhotoImage(image=img)
+
+                            x = (canvas_width - new_width) // 2
+                            y = (canvas_height - new_height) // 2
+
+                            self.video_canvas.delete("all")
+                            self.video_canvas.create_image(
+                                x, y, image=self.current_img_tk, anchor=tk.NW
+                            )
+                else:
+                    # Call the regular update method for other cases
+                    self.update_frame()
         except Exception as e:
             print(f"Error in slider change: {e}")
 
