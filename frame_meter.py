@@ -55,6 +55,10 @@ class FrameDataAnnotator:
         self.meter_size = 80
         self.meter_index = 0  # Current position in the circular buffer
         
+        # Initialize meter buffers with neutral states
+        self.meter_fighter1_states = [FrameState.NEUTRAL] * self.meter_size
+        self.meter_fighter2_states = [FrameState.NEUTRAL] * self.meter_size
+        
         # UI elements
         self.setup_ui()
         
@@ -187,6 +191,11 @@ class FrameDataAnnotator:
             self.fighter1_states = [FrameState.NEUTRAL] * self.total_frames
             self.fighter2_states = [FrameState.NEUTRAL] * self.total_frames
             
+            # Reset the meter buffers
+            self.meter_fighter1_states = [FrameState.NEUTRAL] * self.meter_size
+            self.meter_fighter2_states = [FrameState.NEUTRAL] * self.meter_size
+            self.meter_position = 0
+            
             self.frame_slider.configure(to=self.total_frames - 1)
             self.update_frame()
             self.status_var.set(f"Loaded video: {os.path.basename(file_path)}")
@@ -201,6 +210,11 @@ class FrameDataAnnotator:
             
         # Convert frame to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Update the meter buffer with current frame's state
+        self.meter_position = self.current_frame % self.meter_size
+        self.meter_fighter1_states[self.meter_position] = self.fighter1_states[self.current_frame]
+        self.meter_fighter2_states[self.meter_position] = self.fighter2_states[self.current_frame]
         
         # Add frame meter overlay
         frame = self.add_frame_meter(frame)
@@ -230,7 +244,7 @@ class FrameDataAnnotator:
             
             self.video_canvas.delete("all")
             self.video_canvas.create_image(x, y, image=self.current_img_tk, anchor=tk.NW)
-            
+
     def add_frame_meter(self, frame):
         height, width = frame.shape[:2]
         meter_height = 20
@@ -243,55 +257,56 @@ class FrameDataAnnotator:
         # Calculate the width of each state block
         state_width = width // self.meter_size
         
-        # Draw fighter 1 meter (top)
+        # Draw fighter 1 meter (top) - using the meter buffer
         for i in range(self.meter_size):
-            # Calculate which frame to show at this position
-            frame_idx = self.current_frame + i
-            
-            # Get the state for this frame, defaulting to neutral if out of bounds
-            if 0 <= frame_idx < len(self.fighter1_states):
-                state = self.fighter1_states[frame_idx]
-            else:
-                state = FrameState.NEUTRAL
-                
+            # Get the state from our meter buffer
+            state = self.meter_fighter1_states[i]
             color = STATE_COLORS.get(state, (255, 255, 255))
+            
             x1 = i * state_width
             x2 = (i + 1) * state_width
+            
             # Draw filled rectangle
             cv2.rectangle(overlay, (x1, meter_y), (x2, meter_y + meter_height),
-                         (*color, 230), -1)
+                        (*color, 230), -1)
             # Draw black border
             cv2.rectangle(overlay, (x1, meter_y), (x2, meter_y + meter_height),
-                         (0, 0, 0, 255), 1)
+                        (0, 0, 0, 255), 1)
         
-        # Draw fighter 2 meter (bottom)
+        # Draw fighter 2 meter (bottom) - using the meter buffer
         for i in range(self.meter_size):
-            # Calculate which frame to show at this position
-            frame_idx = self.current_frame + i
-            
-            # Get the state for this frame, defaulting to neutral if out of bounds
-            if 0 <= frame_idx < len(self.fighter2_states):
-                state = self.fighter2_states[frame_idx]
-            else:
-                state = FrameState.NEUTRAL
-                
+            # Get the state from our meter buffer
+            state = self.meter_fighter2_states[i]
             color = STATE_COLORS.get(state, (255, 255, 255))
+            
             x1 = i * state_width
             x2 = (i + 1) * state_width
+            
             # Draw filled rectangle
             cv2.rectangle(overlay, (x1, meter_y + meter_height + gap_height), 
-                         (x2, meter_y + meter_height * 2 + gap_height),
-                         (*color, 230), -1)
+                        (x2, meter_y + meter_height * 2 + gap_height),
+                        (*color, 230), -1)
             # Draw black border
             cv2.rectangle(overlay, (x1, meter_y + meter_height + gap_height), 
-                         (x2, meter_y + meter_height * 2 + gap_height),
-                         (0, 0, 0, 255), 1)
+                        (x2, meter_y + meter_height * 2 + gap_height),
+                        (0, 0, 0, 255), 1)
         
         # Add text for current states
         cv2.putText(overlay, f"P1", (2, meter_y + 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0, 255), 1)
         cv2.putText(overlay, f"P2", (2, meter_y + meter_height + gap_height + 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0, 255), 1)
+        
+        # Draw indicator for current frame position
+        x_pos = self.meter_position * state_width + state_width // 2
+        
+        # Draw triangle indicator above P1 meter
+        triangle_pts = np.array([
+            [x_pos, meter_y - 5],
+            [x_pos - 5, meter_y - 10],
+            [x_pos + 5, meter_y - 10]
+        ], np.int32)
+        cv2.fillPoly(overlay, [triangle_pts], (255, 255, 255, 255))
         
         # Blend overlay with frame
         frame_rgba = cv2.cvtColor(frame, cv2.COLOR_RGB2RGBA)
