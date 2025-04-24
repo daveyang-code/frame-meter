@@ -6,6 +6,7 @@ from PIL import Image, ImageTk
 import json
 from dataclasses import dataclass
 import os
+from ultralytics import YOLO
 
 
 # Define the different states a fighter can be in
@@ -56,6 +57,16 @@ class FrameDataAnnotator:
         self.fighter1_states = []  # Complete history for all frames
         self.fighter2_states = []  # Complete history for all frames
 
+        # Player positions and detection data
+        self.fighter1_position = None  # Will store player 1's detected position
+        self.fighter2_position = None  # Will store player 2's detected position
+        self.players_swapped = False  # Flag to indicate if players are swapped
+
+        # Initialize YOLO model
+        self.yolo_net = None
+        self.yolo_classes = []
+        self.initialize_yolo()
+
         # Frame meter window (80 frames)
         self.meter_size = 80
         self.meter_index = 0  # Current position in the circular buffer
@@ -70,11 +81,34 @@ class FrameDataAnnotator:
         # Add read/write mode
         self.write_mode = False
 
+        # Toggle for detection visualization
+        self.show_detections = tk.BooleanVar(value=True)
+
+        # Mask dilate kernel size
+        self.mask_dilate_size = 7
+
         # UI elements
         self.setup_ui()
 
         # Keyboard shortcuts
         self.setup_keyboard_shortcuts()
+
+    def initialize_yolo(self):
+        try:
+            from ultralytics import YOLO
+
+            # Load the YOLOv8 model
+            self.yolo_model = YOLO("yolov8n.pt")
+
+            # Set model to evaluation mode
+            self.yolo_model.fuse()
+
+            # COCO class names (person is class 0)
+            self.yolo_classes = ["person"]
+
+        except Exception as e:
+            print(f"Error loading YOLO model: {e}")
+            self.yolo_model = None
 
     def setup_ui(self):
         # Main container
@@ -97,6 +131,20 @@ class FrameDataAnnotator:
         ttk.Button(toolbar, text="Export Video", command=self.export_video).pack(
             side=tk.LEFT, padx=5
         )
+
+        # Add toggle for detections
+        det_toggle = ttk.Checkbutton(
+            toolbar,
+            text="Show Detections",
+            variable=self.show_detections,
+            command=self.update_frame,
+        )
+        det_toggle.pack(side=tk.RIGHT, padx=5)
+
+        swap_button = ttk.Button(
+            toolbar, text="Swap Players", command=self.swap_players
+        )
+        swap_button.pack(side=tk.RIGHT, padx=5)
 
         # Video display area
         self.video_frame = ttk.Frame(main_container)
@@ -202,6 +250,13 @@ class FrameDataAnnotator:
         )
         status_bar.pack(fill=tk.X, pady=(10, 0))
 
+    def swap_players(self):
+        self.players_swapped = not self.players_swapped
+        self.status_var.set(
+            f"Players {'swapped' if self.players_swapped else 'reset to default'}"
+        )
+        self.update_frame()
+
     def toggle_mode(self):
         mode = self.mode_var.get()
         self.write_mode = mode == "Write"
@@ -240,6 +295,7 @@ class FrameDataAnnotator:
         self.root.bind("<space>", lambda e: self.toggle_play())
         self.root.bind("<Left>", lambda e: self.prev_frame())
         self.root.bind("<Right>", lambda e: self.next_frame())
+        self.root.bind("m", lambda e: self.toggle_detections())
 
         # State shortcuts for Fighter 1
         self.root.bind("1", lambda e: self.set_state(1, FrameState.NEUTRAL))
@@ -260,6 +316,12 @@ class FrameDataAnnotator:
         self.root.bind("y", lambda e: self.set_state(2, FrameState.BLOCKSTUN))
         self.root.bind("u", lambda e: self.set_state(2, FrameState.PARRY))
         self.root.bind("i", lambda e: self.set_state(2, FrameState.DODGE))
+
+        self.root.bind("s", lambda e: self.swap_players())
+
+    def toggle_detections(self):
+        self.show_detections.set(not self.show_detections.get())
+        self.update_frame()
 
     def open_video(self):
         file_path = filedialog.askopenfilename(
@@ -290,6 +352,107 @@ class FrameDataAnnotator:
             self.update_frame()
             self.status_var.set(f"Loaded video: {os.path.basename(file_path)}")
 
+    def detect_players(self, frame):
+        height, width = frame.shape[:2]
+
+        # Create empty masks for both fighters
+        fighter1_mask = np.zeros((height, width), dtype=np.uint8)
+        fighter2_mask = np.zeros((height, width), dtype=np.uint8)
+
+        # Try YOLO detection first
+        if self.yolo_model is not None:
+            # Run inference
+            results = self.yolo_model(frame, verbose=False)
+
+            # Process results
+            boxes = []
+            for result in results:
+                for box in result.boxes:
+                    # Only consider 'person' class (id 0)
+                    if box.cls == 0 and box.conf > 0.5:
+                        # Get box coordinates in (x1, y1, x2, y2) format
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        boxes.append(
+                            [x1, y1, x2 - x1, y2 - y1]
+                        )  # Convert to (x, y, w, h)
+
+            # Sort boxes by x-coordinate (left to right)
+            boxes.sort(key=lambda b: b[0])
+
+            # We only need the first two detections (leftmost and rightmost)
+            if len(boxes) > 2:
+                boxes = [boxes[0], boxes[-1]]
+
+            # Create masks for each fighter
+            for i, box in enumerate(boxes):
+                x, y, w, h = box
+                if i == 0:  # Leftmost box (fighter 1)
+                    cv2.rectangle(fighter1_mask, (x, y), (x + w, y + h), 255, -1)
+                else:  # Rightmost box (fighter 2)
+                    cv2.rectangle(fighter2_mask, (x, y), (x + w, y + h), 255, -1)
+
+        # If YOLO didn't find anything or isn't available, use simple bounding boxes
+        if np.max(fighter1_mask) == 0 and np.max(fighter2_mask) == 0:
+            # Simple fallback: divide screen into left and right halves
+            left_side_mask = np.zeros((height, width), dtype=np.uint8)
+            left_side_mask[:, : width // 2] = 255
+            fighter1_mask = left_side_mask
+
+            right_side_mask = np.zeros((height, width), dtype=np.uint8)
+            right_side_mask[:, width // 2 :] = 255
+            fighter2_mask = right_side_mask
+
+        # Apply dilation to the masks
+        kernel = np.ones((self.mask_dilate_size, self.mask_dilate_size), np.uint8)
+        fighter1_mask = cv2.dilate(fighter1_mask, kernel, iterations=1)
+        fighter2_mask = cv2.dilate(fighter2_mask, kernel, iterations=1)
+
+        # Make sure masks don't overlap
+        overlap = cv2.bitwise_and(fighter1_mask, fighter2_mask)
+        fighter1_mask = cv2.bitwise_and(fighter1_mask, cv2.bitwise_not(overlap))
+
+        # Swap masks if players are swapped
+        if self.players_swapped:
+            fighter1_mask, fighter2_mask = fighter2_mask, fighter1_mask
+
+        return fighter1_mask, fighter2_mask
+
+    def apply_player_masks(self, frame, fighter1_mask, fighter2_mask):
+        if not self.show_detections.get():
+            return frame
+
+        # Get current states
+        f1_state = self.fighter1_states[self.current_frame]
+        f2_state = self.fighter2_states[self.current_frame]
+
+        # Get colors for states (BGR for OpenCV)
+        f1_color = STATE_COLORS.get(f1_state, (26, 26, 26))
+        f2_color = STATE_COLORS.get(f2_state, (26, 26, 26))
+
+        # Convert to BGR (OpenCV uses BGR)
+        f1_color_bgr = (f1_color[2], f1_color[1], f1_color[0])
+        f2_color_bgr = (f2_color[2], f2_color[1], f2_color[0])
+
+        # Create colored masks
+        height, width = frame.shape[:2]
+        f1_colored_mask = np.zeros((height, width, 3), dtype=np.uint8)
+        f2_colored_mask = np.zeros((height, width, 3), dtype=np.uint8)
+
+        # Apply colors to masks
+        f1_colored_mask[fighter1_mask > 0] = f1_color_bgr
+        f2_colored_mask[fighter2_mask > 0] = f2_color_bgr
+
+        # Create alpha channel (50% transparent)
+        alpha = 0.5
+
+        # Apply the masks to the frame
+        mask_overlay = cv2.addWeighted(
+            f1_colored_mask, alpha, f2_colored_mask, alpha, 0
+        )
+        result = cv2.addWeighted(frame, 1.0, mask_overlay, 0.5, 0)
+
+        return result
+
     def update_frame(self):
         if self.cap is None:
             return
@@ -298,9 +461,6 @@ class FrameDataAnnotator:
         ret, frame = self.cap.read()
         if not ret:
             return
-
-        # Convert frame to RGB
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         if self.write_mode:
             # For write mode - update the sliding window
@@ -336,6 +496,15 @@ class FrameDataAnnotator:
         if not self.write_mode:
             self.f1_state.set(self.fighter1_states[self.current_frame])
             self.f2_state.set(self.fighter2_states[self.current_frame])
+
+        # Detect players and create masks
+        fighter1_mask, fighter2_mask = self.detect_players(frame)
+
+        # Apply colored masks based on frame states
+        frame = self.apply_player_masks(frame, fighter1_mask, fighter2_mask)
+
+        # Convert frame to RGB for display
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # Add frame meter overlay
         frame = self.add_frame_meter(frame)
@@ -563,6 +732,7 @@ class FrameDataAnnotator:
             current_frame = self.current_frame
             current_write_mode = self.write_mode
             current_window_start = self.window_start
+            current_show_detections = self.show_detections.get()
 
             # Reset to beginning
             self.current_frame = 0
@@ -573,48 +743,26 @@ class FrameDataAnnotator:
                 if not ret:
                     break
 
-                # Update the frame display for the current frame
-                if self.write_mode:
-                    # For write mode - update the sliding window
-                    if self.current_frame >= self.meter_size:
-                        self.window_start = max(
-                            0, self.current_frame - self.meter_size + 1
-                        )
-                    else:
-                        self.window_start = 0
+                frame_bgr = frame.copy()
 
-                    # Use chronological window for display
-                    for i in range(self.meter_size):
-                        frame_idx = self.window_start + i
-                        if frame_idx < total_frames:
-                            self.meter_fighter1_states[i] = self.fighter1_states[
-                                frame_idx
-                            ]
-                            self.meter_fighter2_states[i] = self.fighter2_states[
-                                frame_idx
-                            ]
-                        else:
-                            self.meter_fighter1_states[i] = FrameState.NEUTRAL
-                            self.meter_fighter2_states[i] = FrameState.NEUTRAL
-
-                    # Set pointer position relative to window start
-                    self.meter_position = self.current_frame - self.window_start
-                else:
-                    # For read mode - use circular buffer
-                    self.meter_position = self.current_frame % self.meter_size
-                    self.meter_fighter1_states[self.meter_position] = (
-                        self.fighter1_states[self.current_frame]
-                    )
-                    self.meter_fighter2_states[self.meter_position] = (
-                        self.fighter2_states[self.current_frame]
+                # Only apply masks if show_detections is enabled
+                if current_show_detections:
+                    fighter1_mask, fighter2_mask = self.detect_players(frame_bgr)
+                    frame_bgr = self.apply_player_masks(
+                        frame_bgr, fighter1_mask, fighter2_mask
                     )
 
-                # Add frame meter overlay
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frame = self.add_frame_meter(frame)
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+                # Convert to RGB for frame meter overlay
+                frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                frame_rgb = self.add_frame_meter(frame_rgb)
 
-                out.write(frame)
+                # Convert back to BGR for video writing
+                if frame_rgb.shape[2] == 4:  # If RGBA
+                    frame_out = cv2.cvtColor(frame_rgb, cv2.COLOR_RGBA2BGR)
+                else:  # If RGB
+                    frame_out = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+
+                out.write(frame_out)
 
                 # Update frame
                 self.current_frame += 1
