@@ -249,10 +249,6 @@ class FrameDataAnnotator:
         self.root.bind("t", lambda e: self.set_state(2, FrameState.HITSTUN))
         self.root.bind("y", lambda e: self.set_state(2, FrameState.BLOCKSTUN))
 
-        # Undo/Redo
-        self.root.bind("<Control-z>", lambda e: self.undo())
-        self.root.bind("<Control-y>", lambda e: self.redo())
-
     def open_video(self):
         file_path = filedialog.askopenfilename(
             filetypes=[("Video files", "*.mp4 *.avi *.mkv")]
