@@ -21,7 +21,7 @@ class FrameState:
 
 # Color scheme based on SF6 (RGB format)
 STATE_COLORS = {
-    FrameState.NEUTRAL: (255, 255, 255),    
+    FrameState.NEUTRAL: (26, 26, 26),    
     FrameState.STARTUP: (67, 243, 241),      
     FrameState.ACTIVE: (194, 46, 104),         
     FrameState.RECOVERY: (3, 107, 180),       
@@ -92,10 +92,10 @@ class FrameDataAnnotator:
         controls = ttk.Frame(main_container)
         controls.pack(fill=tk.X, pady=10)
         
-        ttk.Button(controls, text="⏮", command=self.prev_frame).pack(side=tk.LEFT, padx=5)
+        ttk.Button(controls, text="▮◀", command=self.prev_frame).pack(side=tk.LEFT, padx=5)
         self.play_button = ttk.Button(controls, text="▶", command=self.toggle_play)
         self.play_button.pack(side=tk.LEFT, padx=5)
-        ttk.Button(controls, text="⏭", command=self.next_frame).pack(side=tk.LEFT, padx=5)
+        ttk.Button(controls, text="▶▮", command=self.next_frame).pack(side=tk.LEFT, padx=5)
         
         self.frame_slider = ttk.Scale(
             controls,
@@ -477,7 +477,7 @@ class FrameDataAnnotator:
             
     def toggle_play(self):
         self.playing = not self.playing
-        self.play_button.configure(text="⏸" if self.playing else "▶")
+        self.play_button.configure(text="▮▮" if self.playing else "▶")
         if self.playing:
             self.play()
             
