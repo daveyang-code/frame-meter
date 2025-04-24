@@ -47,15 +47,17 @@ class FrameDataAnnotator:
         self.current_frame = 0
         self.playing = False
         
-        # Frame data
-        self.fighter1_frames: Dict[int, FighterFrameData] = {}
-        self.fighter2_frames: Dict[int, FighterFrameData] = {}
+        # Frame data - complete history arrays
+        self.fighter1_states = []  # Complete history for all frames
+        self.fighter2_states = []  # Complete history for all frames
         
-        # Frame meter arrays (80 spots for each player)
+        # Frame meter window (80 frames)
         self.meter_size = 80
-        self.fighter1_state_array = [FrameState.NEUTRAL] * self.meter_size
-        self.fighter2_state_array = [FrameState.NEUTRAL] * self.meter_size
-        self.meter_index = 0  # Current position in the circular array
+        self.meter_index = 0  # Current position in the circular buffer
+        
+        # Initialize meter buffers with neutral states
+        self.meter_fighter1_states = [FrameState.NEUTRAL] * self.meter_size
+        self.meter_fighter2_states = [FrameState.NEUTRAL] * self.meter_size
         
         # UI elements
         self.setup_ui()
@@ -64,7 +66,7 @@ class FrameDataAnnotator:
         self.setup_keyboard_shortcuts()
         
         # History for undo/redo
-        self.history: List[tuple] = []
+        self.history = []
         self.history_index = -1
         
     def setup_ui(self):
@@ -185,6 +187,15 @@ class FrameDataAnnotator:
             self.fps = self.cap.get(cv2.CAP_PROP_FPS)
             self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
+            # Initialize complete frame history with neutral states
+            self.fighter1_states = [FrameState.NEUTRAL] * self.total_frames
+            self.fighter2_states = [FrameState.NEUTRAL] * self.total_frames
+            
+            # Reset the meter buffers
+            self.meter_fighter1_states = [FrameState.NEUTRAL] * self.meter_size
+            self.meter_fighter2_states = [FrameState.NEUTRAL] * self.meter_size
+            self.meter_position = 0
+            
             self.frame_slider.configure(to=self.total_frames - 1)
             self.update_frame()
             self.status_var.set(f"Loaded video: {os.path.basename(file_path)}")
@@ -199,6 +210,11 @@ class FrameDataAnnotator:
             
         # Convert frame to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Update the meter buffer with current frame's state
+        self.meter_position = self.current_frame % self.meter_size
+        self.meter_fighter1_states[self.meter_position] = self.fighter1_states[self.current_frame]
+        self.meter_fighter2_states[self.meter_position] = self.fighter2_states[self.current_frame]
         
         # Add frame meter overlay
         frame = self.add_frame_meter(frame)
@@ -228,7 +244,7 @@ class FrameDataAnnotator:
             
             self.video_canvas.delete("all")
             self.video_canvas.create_image(x, y, image=self.current_img_tk, anchor=tk.NW)
-            
+
     def add_frame_meter(self, frame):
         height, width = frame.shape[:2]
         meter_height = 20
@@ -238,42 +254,59 @@ class FrameDataAnnotator:
         # Create overlay
         overlay = np.zeros((height, width, 4), dtype=np.uint8)
         
-        # Get current states
-        f1_state = self.fighter1_frames.get(self.current_frame, FighterFrameData(self.current_frame, FrameState.NEUTRAL)).state
-        f2_state = self.fighter2_frames.get(self.current_frame, FighterFrameData(self.current_frame, FrameState.NEUTRAL)).state
-        
         # Calculate the width of each state block
-        state_width = width // 80
+        state_width = width // self.meter_size
         
-        # Draw fighter 1 meter (top)
-        for i, state in enumerate(self.fighter1_state_array):
+        # Draw fighter 1 meter (top) - using the meter buffer
+        for i in range(self.meter_size):
+            # Get the state from our meter buffer
+            state = self.meter_fighter1_states[i]
             color = STATE_COLORS.get(state, (255, 255, 255))
+            
             x1 = i * state_width
             x2 = (i + 1) * state_width
+            
             # Draw filled rectangle
             cv2.rectangle(overlay, (x1, meter_y), (x2, meter_y + meter_height),
-                         (*color, 230), -1)
+                        (*color, 230), -1)
             # Draw black border
             cv2.rectangle(overlay, (x1, meter_y), (x2, meter_y + meter_height),
-                         (0, 0, 0, 255), 1)
+                        (0, 0, 0, 255), 1)
         
-        # Draw fighter 2 meter (bottom)
-        for i, state in enumerate(self.fighter2_state_array):
+        # Draw fighter 2 meter (bottom) - using the meter buffer
+        for i in range(self.meter_size):
+            # Get the state from our meter buffer
+            state = self.meter_fighter2_states[i]
             color = STATE_COLORS.get(state, (255, 255, 255))
+            
             x1 = i * state_width
             x2 = (i + 1) * state_width
+            
             # Draw filled rectangle
-            cv2.rectangle(overlay, (x1, meter_y + meter_height + gap_height), (x2, meter_y + meter_height * 2 + gap_height),
-                         (*color, 230), -1)
+            cv2.rectangle(overlay, (x1, meter_y + meter_height + gap_height), 
+                        (x2, meter_y + meter_height * 2 + gap_height),
+                        (*color, 230), -1)
             # Draw black border
-            cv2.rectangle(overlay, (x1, meter_y + meter_height + gap_height), (x2, meter_y + meter_height * 2 + gap_height),
-                         (0, 0, 0, 255), 1)
+            cv2.rectangle(overlay, (x1, meter_y + meter_height + gap_height), 
+                        (x2, meter_y + meter_height * 2 + gap_height),
+                        (0, 0, 0, 255), 1)
         
         # Add text for current states
         cv2.putText(overlay, f"P1", (2, meter_y + 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0, 255), 1)
         cv2.putText(overlay, f"P2", (2, meter_y + meter_height + gap_height + 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0, 255), 1)
+        
+        # Draw indicator for current frame position
+        x_pos = self.meter_position * state_width + state_width // 2
+        
+        # Draw triangle indicator above P1 meter
+        triangle_pts = np.array([
+            [x_pos, meter_y - 5],
+            [x_pos - 5, meter_y - 10],
+            [x_pos + 5, meter_y - 10]
+        ], np.int32)
+        cv2.fillPoly(overlay, [triangle_pts], (255, 255, 255, 255))
         
         # Blend overlay with frame
         frame_rgba = cv2.cvtColor(frame, cv2.COLOR_RGB2RGBA)
@@ -290,21 +323,11 @@ class FrameDataAnnotator:
         # Save current state to history
         self.save_to_history()
         
-        # Update frame data
+        # Update frame data in the complete history
         if fighter_num == 1:
-            self.fighter1_frames[self.current_frame] = FighterFrameData(
-                frame=self.current_frame,
-                state=state
-            )
-            # Replace the most recent entry in the array with the new state
-            self.fighter1_state_array[self.meter_index] = state
+            self.fighter1_states[self.current_frame] = state
         else:
-            self.fighter2_frames[self.current_frame] = FighterFrameData(
-                frame=self.current_frame,
-                state=state
-            )
-            # Replace the most recent entry in the array with the new state
-            self.fighter2_state_array[self.meter_index] = state
+            self.fighter2_states[self.current_frame] = state
             
         # Update the frame display without advancing the frame
         self.update_frame()
@@ -322,31 +345,25 @@ class FrameDataAnnotator:
         self.history = self.history[:self.history_index + 1]
         self.history.append((
             self.current_frame,
-            self.fighter1_frames.copy(),
-            self.fighter2_frames.copy(),
-            self.fighter1_state_array.copy(),
-            self.fighter2_state_array.copy()
+            self.fighter1_states.copy(),
+            self.fighter2_states.copy()
         ))
         self.history_index = len(self.history) - 1
         
     def undo(self):
         if self.history_index > 0:
             self.history_index -= 1
-            _, f1_frames, f2_frames, f1_array, f2_array = self.history[self.history_index]
-            self.fighter1_frames = f1_frames.copy()
-            self.fighter2_frames = f2_frames.copy()
-            self.fighter1_state_array = f1_array.copy()
-            self.fighter2_state_array = f2_array.copy()
+            _, f1_states, f2_states = self.history[self.history_index]
+            self.fighter1_states = f1_states.copy()
+            self.fighter2_states = f2_states.copy()
             self.update_frame()
             
     def redo(self):
         if self.history_index < len(self.history) - 1:
             self.history_index += 1
-            _, f1_frames, f2_frames, f1_array, f2_array = self.history[self.history_index]
-            self.fighter1_frames = f1_frames.copy()
-            self.fighter2_frames = f2_frames.copy()
-            self.fighter1_state_array = f1_array.copy()
-            self.fighter2_state_array = f2_array.copy()
+            _, f1_states, f2_states = self.history[self.history_index]
+            self.fighter1_states = f1_states.copy()
+            self.fighter2_states = f2_states.copy()
             self.update_frame()
             
     def save_data(self):
@@ -359,25 +376,14 @@ class FrameDataAnnotator:
             filetypes=[("JSON files", "*.json")]
         )
         
-        if file_path:
+        if not file_path:
+            return
+            
+        try:
+            # Save just the fighter states
             data = {
-                "video_path": self.video_path,
-                "fighter1": [
-                    {
-                        "frame": k,
-                        "state": v.state
-                    }
-                    for k, v in self.fighter1_frames.items()
-                ],
-                "fighter2": [
-                    {
-                        "frame": k,
-                        "state": v.state
-                    }
-                    for k, v in self.fighter2_frames.items()
-                ],
-                "fighter1_state_array": self.fighter1_state_array.copy(),
-                "fighter2_state_array": self.fighter2_state_array.copy()
+                "fighter1_states": self.fighter1_states,
+                "fighter2_states": self.fighter2_states
             }
             
             with open(file_path, 'w') as f:
@@ -385,48 +391,36 @@ class FrameDataAnnotator:
                 
             self.status_var.set(f"Saved frame data to {os.path.basename(file_path)}")
             
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save frame data: {str(e)}")
+            self.status_var.set("Error saving frame data")
+            
     def load_data(self):
+        if not self.video_path:
+            messagebox.showerror("Error", "No video loaded")
+            return
+            
         file_path = filedialog.askopenfilename(
             filetypes=[("JSON files", "*.json")]
         )
         
         if file_path:
-            with open(file_path, 'r') as f:
-                data = json.load(f)
+            try:
+                with open(file_path, 'r') as f:
+                    data = json.load(f)
+                    
+                # Load the complete state arrays
+                self.fighter1_states = data['fighter1_states']
+                self.fighter2_states = data['fighter2_states']
                 
-            # Load video if different
-            if data["video_path"] != self.video_path:
-                self.video_path = data["video_path"]
-                self.cap = cv2.VideoCapture(self.video_path)
-                self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-                self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                self.frame_slider.configure(to=self.total_frames - 1)
+                # Update frame display
+                self.update_frame()
                 
-            # Load frame data
-            self.fighter1_frames = {
-                entry["frame"]: FighterFrameData(
-                    frame=entry["frame"],
-                    state=entry["state"]
-                )
-                for entry in data["fighter1"]
-            }
-            
-            self.fighter2_frames = {
-                entry["frame"]: FighterFrameData(
-                    frame=entry["frame"],
-                    state=entry["state"]
-                )
-                for entry in data["fighter2"]
-            }
-            
-            # Load state arrays if they exist
-            if "fighter1_state_array" in data:
-                self.fighter1_state_array = data["fighter1_state_array"].copy()
-            if "fighter2_state_array" in data:
-                self.fighter2_state_array = data["fighter2_state_array"].copy()
-            
-            self.update_frame()
-            self.status_var.set(f"Loaded frame data from {os.path.basename(file_path)}")
+                self.status_var.set(f"Loaded frames from {os.path.basename(file_path)}")
+                
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load frames: {str(e)}")
+                self.status_var.set("Error loading frame data")
             
     def export_video(self):
         if not self.video_path:
@@ -452,11 +446,17 @@ class FrameDataAnnotator:
             frame_count = 0
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             
+            # Save current state
+            current_frame = self.current_frame
+            
+            # Reset to beginning
+            self.current_frame = 0
+            
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                    
+                
                 # Add frame meter overlay
                 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frame = self.add_frame_meter(frame)
@@ -464,12 +464,19 @@ class FrameDataAnnotator:
                 
                 out.write(frame)
                 
+                # Update frame
+                self.current_frame += 1
+                
                 # Update progress
                 frame_count += 1
                 progress = (frame_count / total_frames) * 100
                 self.status_var.set(f"Exporting video: {progress:.1f}%")
                 self.root.update()
                 
+            # Restore original state
+            self.current_frame = current_frame
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
+            
             cap.release()
             out.release()
             
@@ -485,8 +492,11 @@ class FrameDataAnnotator:
         """Play the video."""
         if self.playing:
             # Save current states before advancing
-            prev_f1_state = self.fighter1_frames.get(self.current_frame, FighterFrameData(self.current_frame, FrameState.NEUTRAL)).state
-            prev_f2_state = self.fighter2_frames.get(self.current_frame, FighterFrameData(self.current_frame, FrameState.NEUTRAL)).state
+            self.save_to_history()
+            
+            # Update states for current frame based on radio buttons
+            self.fighter1_states[self.current_frame] = self.f1_state.get()
+            self.fighter2_states[self.current_frame] = self.f2_state.get()
             
             # Advance to next frame
             self.current_frame += 1
@@ -494,24 +504,6 @@ class FrameDataAnnotator:
                 self.current_frame = 0
                 
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
-            
-            # Get new states - use current radio button selection if no frame data exists
-            if self.current_frame in self.fighter1_frames:
-                new_f1_state = self.fighter1_frames[self.current_frame].state
-            else:
-                new_f1_state = self.f1_state.get()
-                
-            if self.current_frame in self.fighter2_frames:
-                new_f2_state = self.fighter2_frames[self.current_frame].state
-            else:
-                new_f2_state = self.f2_state.get()
-            
-            # Update meter index for circular array
-            self.meter_index = (self.meter_index + 1) % self.meter_size
-            
-            # Update state arrays
-            self.fighter1_state_array[self.meter_index] = new_f1_state
-            self.fighter2_state_array[self.meter_index] = new_f2_state
             
             # Update UI
             self.frame_slider.set(self.current_frame)
@@ -524,30 +516,15 @@ class FrameDataAnnotator:
         """Move to the next frame."""
         if self.current_frame < self.total_frames - 1:
             # Save current states before advancing
-            prev_f1_state = self.fighter1_frames.get(self.current_frame, FighterFrameData(self.current_frame, FrameState.NEUTRAL)).state
-            prev_f2_state = self.fighter2_frames.get(self.current_frame, FighterFrameData(self.current_frame, FrameState.NEUTRAL)).state
+            self.save_to_history()
+            
+            # Update states for current frame based on radio buttons
+            self.fighter1_states[self.current_frame] = self.f1_state.get()
+            self.fighter2_states[self.current_frame] = self.f2_state.get()
             
             # Advance to next frame
             self.current_frame += 1
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
-            
-            # Get new states - use current radio button selection if no frame data exists
-            if self.current_frame in self.fighter1_frames:
-                new_f1_state = self.fighter1_frames[self.current_frame].state
-            else:
-                new_f1_state = self.f1_state.get()
-                
-            if self.current_frame in self.fighter2_frames:
-                new_f2_state = self.fighter2_frames[self.current_frame].state
-            else:
-                new_f2_state = self.f2_state.get()
-            
-            # Update meter index for circular array
-            self.meter_index = (self.meter_index + 1) % self.meter_size
-            
-            # Update state arrays
-            self.fighter1_state_array[self.meter_index] = new_f1_state
-            self.fighter2_state_array[self.meter_index] = new_f2_state
             
             # Update UI
             self.frame_slider.set(self.current_frame)
@@ -556,27 +533,9 @@ class FrameDataAnnotator:
     def prev_frame(self):
         """Move to the previous frame."""
         if self.current_frame > 0:
-            # Move to previous frame
+            # Just move back without changing states
             self.current_frame -= 1
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
-            
-            # Update meter index for circular array
-            self.meter_index = (self.meter_index - 1) % self.meter_size
-            
-            # Get states for the previous frame
-            if self.current_frame in self.fighter1_frames:
-                f1_state = self.fighter1_frames[self.current_frame].state
-            else:
-                f1_state = self.f1_state.get()
-                
-            if self.current_frame in self.fighter2_frames:
-                f2_state = self.fighter2_frames[self.current_frame].state
-            else:
-                f2_state = self.f2_state.get()
-            
-            # Update state arrays
-            self.fighter1_state_array[self.meter_index] = f1_state
-            self.fighter2_state_array[self.meter_index] = f2_state
             
             # Update UI
             self.frame_slider.set(self.current_frame)
@@ -588,36 +547,15 @@ class FrameDataAnnotator:
             frame = int(float(value))
             if frame != self.current_frame:
                 # Save current states before changing frame
-                prev_f1_state = self.fighter1_frames.get(self.current_frame, FighterFrameData(self.current_frame, FrameState.NEUTRAL)).state
-                prev_f2_state = self.fighter2_frames.get(self.current_frame, FighterFrameData(self.current_frame, FrameState.NEUTRAL)).state
+                self.save_to_history()
+                
+                # Update states for current frame based on radio buttons
+                self.fighter1_states[self.current_frame] = self.f1_state.get()
+                self.fighter2_states[self.current_frame] = self.f2_state.get()
                 
                 # Change to new frame
                 self.current_frame = frame
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame)
-                
-                # Get new states - use current radio button selection if no frame data exists
-                if self.current_frame in self.fighter1_frames:
-                    new_f1_state = self.fighter1_frames[self.current_frame].state
-                else:
-                    new_f1_state = self.f1_state.get()
-                    
-                if self.current_frame in self.fighter2_frames:
-                    new_f2_state = self.fighter2_frames[self.current_frame].state
-                else:
-                    new_f2_state = self.f2_state.get()
-                
-                # Update state arrays - only add new state if it's different from previous
-                if new_f1_state != prev_f1_state:
-                    self.fighter1_state_array[self.meter_index] = new_f1_state
-                else:
-                    # If state hasn't changed, add the same state again
-                    self.fighter1_state_array[self.meter_index] = prev_f1_state
-                    
-                if new_f2_state != prev_f2_state:
-                    self.fighter2_state_array[self.meter_index] = new_f2_state
-                else:
-                    # If state hasn't changed, add the same state again
-                    self.fighter2_state_array[self.meter_index] = prev_f2_state
                 
                 # Update UI
                 self.update_frame()
