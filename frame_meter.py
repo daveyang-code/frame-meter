@@ -16,6 +16,8 @@ class FrameState:
     RECOVERY = "recovery"
     HITSTUN = "hitstun"
     BLOCKSTUN = "blockstun"
+    PARRY = "parry"
+    DODGE = "dodge"
 
 
 # Color scheme based on SF6 (RGB format)
@@ -26,6 +28,8 @@ STATE_COLORS = {
     FrameState.RECOVERY: (3, 107, 180),
     FrameState.HITSTUN: (246, 245, 57),
     FrameState.BLOCKSTUN: (200, 200, 50),
+    FrameState.PARRY: (91, 30, 110),
+    FrameState.DODGE: (193, 192, 190),
 }
 
 
@@ -156,6 +160,8 @@ class FrameDataAnnotator:
             FrameState.RECOVERY,
             FrameState.HITSTUN,
             FrameState.BLOCKSTUN,
+            FrameState.PARRY,
+            FrameState.DODGE,
         ]:
             ttk.Radiobutton(
                 self.f1_frame,
@@ -178,6 +184,8 @@ class FrameDataAnnotator:
             FrameState.RECOVERY,
             FrameState.HITSTUN,
             FrameState.BLOCKSTUN,
+            FrameState.PARRY,
+            FrameState.DODGE,
         ]:
             ttk.Radiobutton(
                 self.f2_frame,
@@ -240,6 +248,8 @@ class FrameDataAnnotator:
         self.root.bind("4", lambda e: self.set_state(1, FrameState.RECOVERY))
         self.root.bind("5", lambda e: self.set_state(1, FrameState.HITSTUN))
         self.root.bind("6", lambda e: self.set_state(1, FrameState.BLOCKSTUN))
+        self.root.bind("7", lambda e: self.set_state(1, FrameState.PARRY))
+        self.root.bind("8", lambda e: self.set_state(1, FrameState.DODGE))
 
         # State shortcuts for Fighter 2
         self.root.bind("q", lambda e: self.set_state(2, FrameState.NEUTRAL))
@@ -248,6 +258,8 @@ class FrameDataAnnotator:
         self.root.bind("r", lambda e: self.set_state(2, FrameState.RECOVERY))
         self.root.bind("t", lambda e: self.set_state(2, FrameState.HITSTUN))
         self.root.bind("y", lambda e: self.set_state(2, FrameState.BLOCKSTUN))
+        self.root.bind("u", lambda e: self.set_state(2, FrameState.PARRY))
+        self.root.bind("i", lambda e: self.set_state(2, FrameState.DODGE))
 
     def open_video(self):
         file_path = filedialog.askopenfilename(
