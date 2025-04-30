@@ -23,7 +23,7 @@ Python-based GUI tool for annotating video frame data for two fighters, often us
 # Dependencies
 Make sure you have the following installed:
 ```
-pip install opencv-python numpy tkinter, pillow
+pip install opencv-python numpy tkinter pillow
 ```
 
 # Images
